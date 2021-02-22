@@ -1,5 +1,8 @@
 import express = require('express');
 import crypto = require('crypto');
+import jwt = require('jsonwebtoken');
+import config = require('../../config/default');
+import security = require('../filter/securityFilter');
 import bodyParser = require('body-parser');
 const {studentSchema,resetPasswordSchema} = require('../validate/studentValidate');
 import {pool} from "./connection-pool";
@@ -7,12 +10,17 @@ import {pool} from "./connection-pool";
 export const router = express.Router();
 router.use(bodyParser.json());
 
-router.get('/api/v1/students',(req, res) => {
+router.get('/api/v1/students',security.authenticateToken,(req, res) => {
     pool.getConnection((err, connection) => {
            if (err){
                res.status(500).send('Cannot establish the database connection');
            }else {
-               connection.query('SELECT * FROM student',(err,result)=>{
+               connection.query('SELECT DISTINCT\n' +
+                   '       student.reg_name,initials,first_name,last_name,guardian_name,street_no,\n' +
+                   '       first_name,second_lane,city,gender,contact,active,grade,section,year\n' +
+                   'FROM student\n' +
+                   'LEFT JOIN student_update ON student.reg_name = student_update.reg_name\n' +
+                   'WHERE year=(SELECT MAX(year) FROM student_update WHERE student_update.reg_name=student.reg_name)',(err,result)=>{
                    if (err){
                        res.status(500).send('Failed to read the Student data.');
                    }else {
@@ -23,12 +31,17 @@ router.get('/api/v1/students',(req, res) => {
            }
     });
 });
-router.get('/api/v1/students/:studentId',(req, res) => {
+router.get('/api/v1/students/:studentId',security.authenticateToken,(req, res) => {
     pool.getConnection((err, connection) => {
         if (err){
             res.status(500).send('Cannot establish the database connection');
         }else {
-            connection.query('SELECT * FROM student WHERE reg_name=?',[req.params.studentId],
+            connection.query('SELECT DISTINCT\n' +
+                '       student.reg_name,initials,first_name,last_name,guardian_name,street_no,\n' +
+                '       first_name,second_lane,city,gender,contact,active,grade,section,year\n' +
+                'FROM student\n' +
+                'LEFT JOIN student_update ON student.reg_name = student_update.reg_name\n' +
+                'WHERE year=(SELECT MAX(year) FROM student_update WHERE student_update.reg_name=student.reg_name) AND student.reg_name=?',[req.params.studentId],
                 (err, result) => {
                 if(err){
                     res.status(500).send('Failed to read the Student data.');
@@ -44,13 +57,17 @@ router.get('/api/v1/students/:studentId',(req, res) => {
         }
     });
 });
-router.post('/api/v1/students',async (req, res) => {
+router.post('/api/v1/students',security.authenticateToken,async (req, res) => {
     try {
         var result = await studentSchema.validateAsync(req.body);
     }catch (error){
         if(error.isJoi === true)
             res.status(422).json({'Invalid student details':error});
             return;
+    }
+    if(req.body.year > new Date().getFullYear()){
+        res.status(400).json('Student registration year cannot be greater than this year');
+        return;
     }
     pool.getConnection((err, connection) => {
        if(err){
@@ -140,33 +157,101 @@ router.post('/api/v1/students',async (req, res) => {
        }
     });
 });
-router.delete('/api/v1/students/:studentId',(req, res) => {
+router.post('/api/v1/auth',(req, res) => {
+    const {username,password} = req.body;
+    if(typeof username === "undefined" || typeof password === "undefined"){
+        return res.status(400).json('Username and Password required to proceed');
+    }
+    const hash = crypto.createHmac('sha256',req.body.password)
+        .update('This Application is belonging to MR.K.P.T.Mahavila')
+        .digest('hex');
+    pool.getConnection((err, connection) => {
+       if(err){
+           return res.status(500).json('Cannot establish the database connection..!');
+       } else {
+           connection.query('SELECT * FROM (SELECT reg_name,password FROM student\n' +
+               '               UNION ALL\n' +
+               '               SELECT nic,password FROM staff) AS a\n' +
+               'WHERE a.reg_name = ? AND password = ?',[req.body.username,hash],(err, results) => {
+               if(err){
+                    res.status(500).json('Cannot read the login data.');
+               }else {
+                   if(results.length>0){
+                       const hash = crypto.createHmac('sha256',config.secret)
+                           .update('This Application is belonging to MR.K.P.T.Mahavila')
+                           .digest('hex');
+                       const token = jwt.sign({id: results[0].reg_name},hash,{expiresIn: '18000s'});
+                       res.status(202).send(token);
+                   }else {
+                       res.status(401).json('Invalid login data.');
+                   }
+               }
+           });
+       }
+       connection.release();
+    });
+});
+router.delete('/api/v1/students/:studentId',security.authenticateToken,(req, res) => {
     pool.getConnection((err, connection) => {
         if(err){
             res.status(500).json('Cannot establish the database connection..!');
         }else {
-            connection.query('SELECT * FROM student WHERE reg_name=?',[req.params.studentId],(err, result) => {
-                if (err){
-                    res.status(500).json('Cannot identify the student');
+            connection.beginTransaction(err => {
+                if(err){
+                    connection.rollback(err => {
+                       connection.release();
+                       return;
+                    });
                 }else {
-                    if(result.length>0){
-                        connection.query('DELETE FROM student WHERE reg_name=?',[req.params.studentId],(err, result) => {
-                            if(err){
-                                res.status(500).json('Cannot delete the student');
-                            } else {
-                                res.status(201).json('Successfully deleted the student');
+                    connection.query('SELECT * FROM student WHERE reg_name=?',[req.params.studentId],(err, result) => {
+                        if (err){
+                            connection.release();
+                            res.status(500).json('Something went wrong! Cannot read the student data.');
+                            return;
+                        }else {
+                            if(result.length>0){
+                                connection.query('DELETE FROM student_update WHERE reg_name=?',[req.params.studentId],(err, result) => {
+                                    if(err){
+                                        connection.release();
+                                        res.status(500).json('Cannot delete the student');
+                                        return;
+                                    } else {
+                                        connection.query('DELETE FROM student WHERE reg_name=?',[req.params.studentId],(err, results) => {
+                                            if(err){
+                                                connection.rollback(err1 => {
+                                                    connection.release();
+                                                    res.status(500).json('Cannot delete the student');
+                                                    return;
+                                                });
+                                            }else {
+                                                connection.commit(err1 => {
+                                                    if(err1){
+                                                        connection.rollback(err2 => {
+                                                            connection.release();
+                                                            res.status(500).json('Cannot delete the student');
+                                                            return;
+                                                        });
+                                                    }else {
+                                                        connection.release();
+                                                        res.status(201).json('Successfully deleted the student');
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    }
+                                });
+                            }else {
+                                connection.release();
+                                res.status(404).json('No student exist.');
                             }
-                        });
-                    }else {
-                        res.status(404).json('No student exist.');
-                    }
+                        }
+                    });
                 }
-            })
-            connection.release();
+            });
         }
     });
 });
-router.put('/api/v1/students/:studentId',async (req, res) => {
+router.put('/api/v1/students/:studentId',security.authenticateToken,async (req, res) => {
     try {
         var result = await studentSchema.validateAsync(req.body);
     }catch (error){
@@ -186,40 +271,112 @@ router.put('/api/v1/students/:studentId',async (req, res) => {
             connection.query('SELECT * FROM student WHERE reg_name=?',[req.params.studentId],(err, result) => {
                if(err){
                    res.status(500).json('Cannot identify the student');
+                   return;
                } else {
                    if(result.length>0){
-                       connection.query('UPDATE student SET initials=?,first_name=?,last_name=?,guardian_name=?,' +
-                           'street_no=?,first_lane=?,second_lane=?,city=?,gender=?,contact=?,active=? WHERE reg_name=?',
-                           [
-                               body.initials,
-                               body.first_name,
-                               body.last_name,
-                               body.guardian_name,
-                               body.street_no,
-                               body.first_lane,
-                               body.second_lane,
-                               body.city,
-                               body.gender,
-                               body.contact,
-                               body.active,
-                               body.reg_name,
-                           ],(err, results) => {
-                               if(err){
-                                   res.status(500).json('Failed to update the student data');
-                               }else {
-                                   res.status(201).json(req.body);
-                               }
-                           });
+                       connection.beginTransaction(err1 => {
+                          if(err1){
+                              connection.release();
+                              res.status(500).json('Internal Server Error Occured');
+                              return;
+                          }else {
+                              connection.query('UPDATE student SET initials=?,first_name=?,last_name=?,guardian_name=?,' +
+                                  'street_no=?,first_lane=?,second_lane=?,city=?,gender=?,contact=?,active=? WHERE reg_name=?',
+                                  [
+                                      body.initials,
+                                      body.first_name,
+                                      body.last_name,
+                                      body.guardian_name,
+                                      body.street_no,
+                                      body.first_lane,
+                                      body.second_lane,
+                                      body.city,
+                                      body.gender,
+                                      body.contact,
+                                      body.active,
+                                      body.reg_name,
+                                  ],(err, results) => {
+                                      if(err){
+                                          connection.rollback(err2 => {
+                                             connection.release();
+                                             res.status(500).json('Cannot update the student');
+                                             return;
+                                          });
+                                      }else {
+                                          connection.query('SELECT * FROM student_update WHERE reg_name=? AND year=?',
+                                              [body.reg_name,body.year],(err, results) => {
+                                                if (err){
+                                                    connection.rollback(err2 => {
+                                                        connection.release();
+                                                        res.status(500).json('Internal Server Error Occured');
+                                                        return;
+                                                    });
+                                                }else {
+                                                    if (results.length>0){
+                                                        connection.query('UPDATE student_update SET grade=?, section=? WHERE reg_name=? AND year=?',
+                                                            [body.grade,body.section,body.reg_name,body.year],(err, results) => {
+                                                                if (err){
+                                                                    connection.rollback(err2 => {
+                                                                       connection.release();
+                                                                        res.status(500).json('Internal Server Error Occured');
+                                                                        return;
+                                                                    });
+                                                                }else {
+                                                                    connection.commit(err2 => {
+                                                                        if (err2){
+                                                                            connection.rollback(err3 => {
+                                                                                connection.release();
+                                                                                res.status(500).json('Internal Server Error Occured');
+                                                                                return;
+                                                                            });
+                                                                        }else {
+                                                                            connection.release();
+                                                                            res.status(201).json(req.body);
+                                                                        }
+                                                                    });
+                                                                }
+                                                            });
+                                                    }else {
+                                                        connection.query('INSERT INTO student_update VALUES (?,?,?,?)',
+                                                            [body.reg_name,body.grade,body.section,body.year],(err, results) => {
+                                                            if(err){
+                                                                connection.rollback(err2 => {
+                                                                   connection.release();
+                                                                    res.status(500).json('Internal Server Error Occured');
+                                                                    return;
+                                                                });
+                                                            }else {
+                                                                connection.commit(err2 => {
+                                                                   if (err2){
+                                                                       connection.rollback(err3 => {
+                                                                           connection.release();
+                                                                           res.status(500).json('Internal Server Error Occured');
+                                                                           return;
+                                                                       });
+                                                                   }else {
+                                                                       connection.release();
+                                                                       res.status(201).json(req.body);
+                                                                   }
+                                                                });
+                                                            }
+                                                            });
+                                                    }
+                                                }
+                                              });
+                                      }
+                                  });
+                          }
+                       });
                    }else {
-                       res.status(404).json('No student exist.')
+                       connection.release();
+                       res.status(404).json('No student exist.');
                    }
                }
             });
-            connection.release();
         }
     });
 });
-router.put('/api/v1/students/password/:studentId',async (req, res) => {
+router.put('/api/v1/students/password/:studentId',security.authenticateToken,async (req, res) => {
     try {
         var result = await resetPasswordSchema.validateAsync(req.body);
     }catch (error){

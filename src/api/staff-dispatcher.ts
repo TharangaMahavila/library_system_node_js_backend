@@ -2,17 +2,18 @@ import express = require('express');
 import crypto = require('crypto');
 import bodyParser = require('body-parser');
 const {staffSchema,resetPasswordSchema} = require('../validate/staffValidate');
+import security = require('../filter/securityFilter');
 import {pool} from "./connection-pool";
 
 export const router = express.Router();
 router.use(bodyParser.json());
 
-router.get('/api/v1/staffs',(req, res) => {
+router.get('/api/v1/staffs',security.authenticateToken,(req, res) => {
     pool.getConnection((err, connection) => {
         if (err){
             res.status(500).send('Cannot establish the database connection');
         }else {
-            connection.query('SELECT * FROM staff',(err,result)=>{
+            connection.query('SELECT nic,name,contact,street_no,first_lane,second_lane,city,gender,salary_no,active FROM staff',(err,result)=>{
                 if (err){
                     res.status(500).send('Failed to read the Staff members data.');
                 }else {
@@ -23,12 +24,12 @@ router.get('/api/v1/staffs',(req, res) => {
         }
     });
 });
-router.get('/api/v1/staffs/:staffId',(req, res) => {
+router.get('/api/v1/staffs/:staffId',security.authenticateToken,(req, res) => {
     pool.getConnection((err, connection) => {
         if (err){
             res.status(500).send('Cannot establish the database connection');
         }else {
-            connection.query('SELECT * FROM staff WHERE nic=?',[req.params.staffId],
+            connection.query('SELECT nic,name,contact,street_no,first_lane,second_lane,city,gender,salary_no,active FROM staff WHERE nic=?',[req.params.staffId],
                 (err, result) => {
                     if(err){
                         res.status(500).send('Failed to read the Staff members data.');
@@ -44,7 +45,7 @@ router.get('/api/v1/staffs/:staffId',(req, res) => {
         }
     });
 });
-router.post('/api/v1/staffs',async (req, res) => {
+router.post('/api/v1/staffs',security.authenticateToken,async (req, res) => {
     try {
         var result = await staffSchema.validateAsync(req.body);
     }catch (error){
@@ -96,7 +97,7 @@ router.post('/api/v1/staffs',async (req, res) => {
         }
     });
 });
-router.delete('/api/v1/staffs/:staffId',(req, res) => {
+router.delete('/api/v1/staffs/:staffId',security.authenticateToken,(req, res) => {
     pool.getConnection((err, connection) => {
         if(err){
             res.status(500).json('Cannot establish the database connection..!');
@@ -122,7 +123,7 @@ router.delete('/api/v1/staffs/:staffId',(req, res) => {
         }
     });
 });
-router.put('/api/v1/staffs/:staffId',async (req, res) => {
+router.put('/api/v1/staffs/:staffId',security.authenticateToken,async (req, res) => {
     try {
         var result = await staffSchema.validateAsync(req.body);
     }catch (error){
@@ -173,7 +174,7 @@ router.put('/api/v1/staffs/:staffId',async (req, res) => {
         }
     });
 });
-router.put('/api/v1/staffs/password/:staffId',async (req, res) => {
+router.put('/api/v1/staffs/password/:staffId',security.authenticateToken,async (req, res) => {
     try {
         var result = await resetPasswordSchema.validateAsync(req.body);
     }catch (error){
