@@ -12,7 +12,10 @@ import joi = require('@hapi/joi')
     city: joi.string().min(3),
     gender: joi.string().valid('MALE','FEMALE').required(),
     contact: joi.string().regex(/^07[0-9]{8}$/),
-    active: joi.string().valid('YES','NO')
+    active: joi.string().valid('YES','NO'),
+    grade: joi.number().min(1).max(13).required(),
+    section: joi.string().valid('A','B','C','D','E','F','G').required(),
+    year: joi.number().min(2010).max(2100).required()
 });
 const resetPasswordSchema = joi.object({
     reg_name: joi.string().required(),

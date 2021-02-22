@@ -55,48 +55,88 @@ router.post('/api/v1/students',async (req, res) => {
     pool.getConnection((err, connection) => {
        if(err){
            res.status(500).send('Cannot establish the database connection');
+           return;
        } else {
            var body = req.body;
-           connection.query('INSERT INTO student (' +
-               'reg_name,' +
-               'initials,' +
-               'first_name,' +
-               'last_name,' +
-               'guardian_name,' +
-               'street_no,' +
-               'first_lane,' +
-               'second_lane,' +
-               'city,' +
-               'gender,' +
-               'contact,' +
-               'password,' +
-               'active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-               [
-                   body.reg_name,
-                   body.initials,
-                   body.first_name,
-                   body.last_name,
-                   body.guardian_name,
-                   body.street_no,
-                   body.first_lane,
-                   body.second_lane,
-                   body.city,
-                   body.gender,
-                   body.contact,
-                   '617c437600fd562ec1a38b241fba6bd658a5fe0ac79e655545bf10bb88ab2c29',
-                   'YES'
-               ],(err, results) => {
+           connection.beginTransaction(err => {
                if(err){
-                   if(err.code === 'ER_DUP_ENTRY'){
-                       res.status(400).json('Student already saved..!');
-                   }else{
-                       res.status(500).json('Failed to insert the student data');
-                   }
-               }else {
-                   res.status(201).json(req.body);
+                   connection.rollback(err => {
+                       connection.release();
+                   });
+               }else{
+                   connection.query('INSERT INTO student (' +
+                       'reg_name,' +
+                       'initials,' +
+                       'first_name,' +
+                       'last_name,' +
+                       'guardian_name,' +
+                       'street_no,' +
+                       'first_lane,' +
+                       'second_lane,' +
+                       'city,' +
+                       'gender,' +
+                       'contact,' +
+                       'password,' +
+                       'active) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       [
+                           body.reg_name,
+                           body.initials,
+                           body.first_name,
+                           body.last_name,
+                           body.guardian_name,
+                           body.street_no,
+                           body.first_lane,
+                           body.second_lane,
+                           body.city,
+                           body.gender,
+                           body.contact,
+                           '617c437600fd562ec1a38b241fba6bd658a5fe0ac79e655545bf10bb88ab2c29',
+                           'YES'
+                       ],(err, results) => {
+                           if(err){
+                               if(err.code === 'ER_DUP_ENTRY'){
+                                   res.status(400).json('Student already saved..!');
+                                   connection.rollback(err => {
+                                       connection.release();
+                                   });
+                                   return;
+                               }else{
+                                   res.status(500).json('Failed to insert the student data');
+                                   connection.rollback(err => {
+                                       connection.release();
+                                   });
+                                   return;;
+                               }
+                           }else {
+                               connection.query('INSERT INTO student_update VALUES (?,?,?,?)',[
+                                   body.reg_name,
+                                   body.grade,
+                                   body.section,
+                                   body.year
+                               ],(err, results) => {
+                                   if (err){
+                                       res.status(500).json('Failed to insert the student data');
+                                       connection.rollback(err => {
+                                           connection.release();
+                                       });
+                                       return;
+                                   }else {
+                                       connection.commit(err => {
+                                           if(err){
+                                               connection.rollback(err => {
+                                                   connection.release();
+                                               });
+                                           }else {
+                                               connection.release();
+                                               res.status(201).json(req.body);
+                                           }
+                                       });
+                                   }
+                               });
+                           }
+                       });
                }
-               });
-           connection.release();
+           });
        }
     });
 });
@@ -179,7 +219,14 @@ router.put('/api/v1/students/:studentId',async (req, res) => {
         }
     });
 });
-router.put('/api/v1/students/password/:studentId',(req, res) => {
+router.put('/api/v1/students/password/:studentId',async (req, res) => {
+    try {
+        var result = await resetPasswordSchema.validateAsync(req.body);
+    }catch (error){
+        if(error.isJoi === true)
+            res.status(422).json({'Invalid password reset details':error});
+        return;
+    }
     if(req.params.studentId !== req.body.reg_name){
         res.status(400).json('Cannot process the request becase of the diffrent student id');
         return;
@@ -188,18 +235,11 @@ router.put('/api/v1/students/password/:studentId',(req, res) => {
         if(err){
             res.status(500).json('Cannot establish the database connection')
         }else {
-            connection.query('SELECT password FROM student WHERE reg_name=?',[req.params.studentId],async (err, results) => {
+            connection.query('SELECT password FROM student WHERE reg_name=?',[req.params.studentId], (err, results) => {
                 if(err){
                     res.status(500).json('Cannot identify the student');
                 }else {
                     if(results.length>0){
-                        try {
-                            var result = await resetPasswordSchema.validateAsync(req.body);
-                        }catch (error){
-                            if(error.isJoi === true)
-                                res.status(422).json({'Invalid password reset details':error});
-                            return;
-                        }
                         const hash = crypto.createHmac('sha256',req.body.password)
                             .update('This Application is belonging to MR.K.P.T.Mahavila')
                             .digest('hex');
